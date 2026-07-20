@@ -248,10 +248,19 @@ def resolve_masked_env(config_url, key_var):
     if not masked:
         log("resolve-masked: no masked env vars found")
         return
-    if not config_url.startswith("https://"):
-        fail_config("BOOTSTRAP_CONFIG_URL must be https:// (required in "
-                    "BOOTSTRAP_RESOLVE_MASKED=auto mode)")
-    api_key = os.environ.get(key_var, "")
+    base_urls = [u for u in config_url.split() if u]
+    if not base_urls:
+        fail_config("BOOTSTRAP_CONFIG_URL is required in "
+                    "BOOTSTRAP_RESOLVE_MASKED=auto mode (space-separated "
+                    "base URLs are tried in order)")
+    for u in base_urls:
+        host = urllib.parse.urlsplit(u).hostname or ""
+        if not (u.startswith("https://")
+                or (u.startswith("http://") and host.endswith(".svc.cluster.local"))):
+            fail_config("BOOTSTRAP_CONFIG_URL entries must be https:// "
+                        "(plain http only for cluster-internal "
+                        ".svc.cluster.local hosts): %r" % u)
+    api_key = os.environ.get(key_var, "").strip()
     if not api_key:
         fail_config("resolve-masked: env var %r (BOOTSTRAP_CONFIG_KEY_VAR) "
                     "is empty" % key_var)
@@ -259,7 +268,6 @@ def resolve_masked_env(config_url, key_var):
     config_path = os.environ.get("BOOTSTRAP_CONFIG_PATH", "/api/v1/config").strip()
     if not config_path.startswith("/"):
         config_path = "/" + config_path
-    url = config_url.rstrip("/") + config_path
     osc_token = os.environ.get("OSC_ACCESS_TOKEN", "")
     # Auth contracts differ between config-service frontends; try the known
     # variants in order and use the first that is not rejected.
@@ -274,31 +282,42 @@ def resolve_masked_env(config_url, key_var):
                           "Authorization": "Bearer " + osc_token}))
     opener = urllib.request.build_opener(_SafeRedirectHandler)
     body = None
-    last_err = "no auth variant attempted"
-    for variant_name, headers in variants:
-        request = urllib.request.Request(url)
-        request.add_header("User-Agent", "osc-job-bootstrap")
-        for h, v in headers.items():
-            request.add_header(h, v)
-        try:
-            resp = opener.open(request, timeout=FETCH_TIMEOUT_S)
-            try:
-                body = resp.read()
-            finally:
-                resp.close()
-            log("resolve-masked: config read OK (auth variant: %s)" % variant_name)
+    last_err = "no base URL or auth variant attempted"
+    for base in base_urls:
+        if body is not None:
             break
-        except urllib.error.HTTPError as exc:
-            last_err = "HTTP %d (variant %s)" % (exc.code, variant_name)
-            if exc.code in (401, 403):
-                continue
-            fail_fetch("config read failed: " + last_err)
-        except urllib.error.URLError as exc:
-            fail_fetch("config read failed: %s" % getattr(exc, "reason", exc))
-        except (TimeoutError, OSError) as exc:
-            fail_fetch("config read failed: %s" % type(exc).__name__)
+        url = base.rstrip("/") + config_path
+        shown_host = urllib.parse.urlsplit(base).hostname or base
+        for variant_name, headers in variants:
+            request = urllib.request.Request(url)
+            request.add_header("User-Agent", "osc-job-bootstrap")
+            for h, v in headers.items():
+                request.add_header(h, v)
+            try:
+                resp = opener.open(request, timeout=30)
+                try:
+                    body = resp.read()
+                finally:
+                    resp.close()
+                log("resolve-masked: config read OK (host %s, auth variant %s)"
+                    % (shown_host, variant_name))
+                break
+            except urllib.error.HTTPError as exc:
+                last_err = "HTTP %d (host %s, variant %s)" % (
+                    exc.code, shown_host, variant_name)
+                log("resolve-masked: " + last_err)
+                if exc.code in (401, 403, 404):
+                    continue
+                fail_fetch("config read failed: " + last_err)
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                reason = getattr(exc, "reason", exc)
+                last_err = "%s (host %s)" % (type(reason).__name__ if not
+                    isinstance(reason, str) else reason, shown_host)
+                log("resolve-masked: unreachable: " + last_err)
+                break  # next base URL, all variants would fail the same way
     if body is None:
-        fail_fetch("config read failed on all auth variants, last: " + last_err)
+        fail_fetch("config read failed on all base URLs and auth variants, "
+                   "last: " + last_err)
     import json
     try:
         data = json.loads(body.decode("utf-8"))
