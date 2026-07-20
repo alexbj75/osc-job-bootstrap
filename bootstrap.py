@@ -70,6 +70,9 @@ Environment contract (values typically come from an OSC parameter store):
   BOOTSTRAP_CONFIG_KEY_VAR  Name of the env var holding the config API key
                          (default CONFIG_API_KEY). The variable is removed
                          from the environment after resolution.
+  BOOTSTRAP_CONFIG_PATH  Read-endpoint path on the config service (default
+                         /api/v1/config, the documented Application Config
+                         Service list endpoint).
 
 Security posture: no shell is ever invoked; environment VALUES are never
 printed by the launcher; redirects are followed only to https URLs and the
@@ -253,7 +256,10 @@ def resolve_masked_env(config_url, key_var):
         fail_config("resolve-masked: env var %r (BOOTSTRAP_CONFIG_KEY_VAR) "
                     "is empty" % key_var)
     log("resolve-masked: %d masked vars: %s" % (len(masked), ", ".join(masked)))
-    url = config_url.rstrip("/") + "/config"
+    config_path = os.environ.get("BOOTSTRAP_CONFIG_PATH", "/api/v1/config").strip()
+    if not config_path.startswith("/"):
+        config_path = "/" + config_path
+    url = config_url.rstrip("/") + config_path
     osc_token = os.environ.get("OSC_ACCESS_TOKEN", "")
     # Auth contracts differ between config-service frontends; try the known
     # variants in order and use the first that is not rejected.
