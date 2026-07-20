@@ -36,6 +36,9 @@ Then set parameters:
 | `BOOTSTRAP_STEPS` | Commands to run in the unpacked tree, separated by newlines or ` && ` (spaces required). No shell is used. |
 | `BOOTSTRAP_STEPS_B64` | The same step list, base64-encoded (UTF-8). Takes precedence over `BOOTSTRAP_STEPS`. Prefer this when commands contain `&`, `*`, `$` or other characters your platform may mangle during env injection. |
 | `BOOTSTRAP_STEP_TIMEOUT` | Per-step (and pip) timeout in seconds (default 1800). |
+| `BOOTSTRAP_RESOLVE_MASKED` | `auto`: if the platform injects encrypted parameters as the literal mask `***`, fetch the decrypted config from the store's read API and replace ONLY the masked entries in memory before the steps run. |
+| `BOOTSTRAP_CONFIG_URL` | Base https URL of the parameter store (config service) instance. Required with `BOOTSTRAP_RESOLVE_MASKED=auto`. |
+| `BOOTSTRAP_CONFIG_KEY_VAR` | Name of the env var holding the config API key (default `CONFIG_API_KEY`). Removed from the environment after resolution. |
 
 Store the token itself (for example a fine-grained GitHub PAT with
 `contents:read` on a single repository) as a **secret** parameter, and

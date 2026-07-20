@@ -55,6 +55,21 @@ Environment contract (values typically come from an OSC parameter store):
                          for such commands.
   BOOTSTRAP_STEP_TIMEOUT Per-step (and pip) timeout in seconds
                          (default 1800).
+  BOOTSTRAP_RESOLVE_MASKED  Set to "auto" to resolve masked secrets: some
+                         platforms inject encrypted parameters as the
+                         literal mask "***" instead of decrypting them. In
+                         auto mode the launcher fetches the decrypted
+                         config from the parameter store's own read API
+                         (GET {BOOTSTRAP_CONFIG_URL}/config with the
+                         x-config-api-key header, plus Authorization:
+                         Bearer $OSC_ACCESS_TOKEN when present) and
+                         replaces ONLY the masked entries, in memory,
+                         before the steps run. Values are never printed.
+  BOOTSTRAP_CONFIG_URL   Base https URL of the parameter store (config
+                         service) instance. Required in auto mode.
+  BOOTSTRAP_CONFIG_KEY_VAR  Name of the env var holding the config API key
+                         (default CONFIG_API_KEY). The variable is removed
+                         from the environment after resolution.
 
 Security posture: no shell is ever invoked; environment VALUES are never
 printed by the launcher; redirects are followed only to https URLs and the
@@ -132,6 +147,9 @@ def probe():
     log("env var NAMES (%d total), values never printed:" % len(os.environ))
     for name in sorted(os.environ):
         print("  " + name, flush=True)
+    masked = sorted(k for k, v in os.environ.items() if v == "***")
+    if masked:
+        log("masked (value is literal ***): " + ", ".join(masked))
     log("probe complete")
 
 
@@ -220,6 +238,65 @@ def safe_extract(tar_path, dest_dir):
         root = out_dir
     log("extracted to " + root)
     return root
+
+
+def resolve_masked_env(config_url, key_var):
+    masked = sorted(k for k, v in os.environ.items() if v == "***")
+    if not masked:
+        log("resolve-masked: no masked env vars found")
+        return
+    if not config_url.startswith("https://"):
+        fail_config("BOOTSTRAP_CONFIG_URL must be https:// (required in "
+                    "BOOTSTRAP_RESOLVE_MASKED=auto mode)")
+    api_key = os.environ.get(key_var, "")
+    if not api_key:
+        fail_config("resolve-masked: env var %r (BOOTSTRAP_CONFIG_KEY_VAR) "
+                    "is empty" % key_var)
+    log("resolve-masked: %d masked vars: %s" % (len(masked), ", ".join(masked)))
+    request = urllib.request.Request(config_url.rstrip("/") + "/config")
+    request.add_header("x-config-api-key", api_key)
+    request.add_header("User-Agent", "osc-job-bootstrap")
+    osc_token = os.environ.get("OSC_ACCESS_TOKEN", "")
+    if osc_token:
+        request.add_header("Authorization", "Bearer " + osc_token)
+    opener = urllib.request.build_opener(_SafeRedirectHandler)
+    try:
+        resp = opener.open(request, timeout=FETCH_TIMEOUT_S)
+        try:
+            body = resp.read()
+        finally:
+            resp.close()
+    except urllib.error.HTTPError as exc:
+        fail_fetch("config read failed: HTTP %d" % exc.code)
+    except urllib.error.URLError as exc:
+        fail_fetch("config read failed: %s" % getattr(exc, "reason", exc))
+    except (TimeoutError, OSError) as exc:
+        fail_fetch("config read failed: %s" % type(exc).__name__)
+    import json
+    try:
+        data = json.loads(body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        fail_fetch("config read returned non-JSON")
+        return  # unreachable
+    if isinstance(data, dict) and isinstance(data.get("config"), dict):
+        data = data["config"]
+    if isinstance(data, list):
+        data = {e.get("key"): e.get("value") for e in data if isinstance(e, dict)}
+    if not isinstance(data, dict):
+        fail_fetch("config read returned an unexpected JSON shape")
+        return  # unreachable
+    resolved, unresolved = [], []
+    for name in masked:
+        value = data.get(name)
+        if isinstance(value, str) and value and value != "***":
+            os.environ[name] = value
+            resolved.append(name)
+        else:
+            unresolved.append(name)
+    log("resolve-masked: resolved %d (%s)" % (len(resolved), ", ".join(resolved) or "-"))
+    if unresolved:
+        log("resolve-masked: WARNING, still masked: %s" % ", ".join(unresolved))
+    os.environ.pop(key_var, None)
 
 
 def parse_steps(raw):
@@ -331,6 +408,11 @@ def main():
         repo_root = safe_extract(tar_path, work)
         # The fetch token's job is done; keep it away from pip and the steps.
         os.environ.pop(token_var, None)
+        if os.environ.get("BOOTSTRAP_RESOLVE_MASKED", "").strip().lower() == "auto":
+            resolve_masked_env(
+                os.environ.get("BOOTSTRAP_CONFIG_URL", "").strip(),
+                os.environ.get("BOOTSTRAP_CONFIG_KEY_VAR", "CONFIG_API_KEY").strip(),
+            )
         pip_args = os.environ.get("BOOTSTRAP_PIP_ARGS", "").strip()
         if pip_args:
             argv = [sys.executable, "-m", "pip", "install"] + shlex.split(pip_args)
