@@ -29,6 +29,7 @@ Then set parameters:
 | Variable | Meaning |
 |---|---|
 | `BOOTSTRAP_MODE` | `probe` (default): print env var NAMES only, verify injection. `run`: fetch + execute. |
+| `BOOTSTRAP_REQUIRE_REPO` | Same pin as `--require-repo`, read from the environment when no CLI pin is given. Weaker trust domain: store writers can change it. Needed on runners that ignore the worker command and fall back to `job.py`. |
 | `BOOTSTRAP_TARBALL_URL` | e.g. `https://api.github.com/repos/OWNER/REPO/tarball/REF` |
 | `BOOTSTRAP_TOKEN_VAR` | Name of the env var holding the bearer token (default `GITHUB_READ_PAT`). |
 | `BOOTSTRAP_PIP_ARGS` | Optional `pip install` args run in the unpacked tree, e.g. `-r requirements.txt`. |

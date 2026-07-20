@@ -17,6 +17,12 @@ trust domain than the parameter store):
 
 Environment contract (values typically come from an OSC parameter store):
 
+  BOOTSTRAP_REQUIRE_REPO Same pin as --require-repo, read from the
+                         environment when no CLI pin is given. NOTE: this
+                         variant lives in the parameter store's trust
+                         domain, so store writers CAN change it; prefer the
+                         CLI pin where the platform delivers the worker
+                         command.
   BOOTSTRAP_MODE         "probe" (default) or "run".
                          probe: print python/pip versions and the NAMES of
                          all environment variables (never values), then exit
@@ -281,6 +287,12 @@ def parse_cli(argv):
 
 def main():
     require_repo = parse_cli(sys.argv[1:])
+    if not require_repo:
+        env_pin = os.environ.get("BOOTSTRAP_REQUIRE_REPO", "").strip()
+        if env_pin:
+            if not re.fullmatch(r"[\w.-]+/[\w.-]+", env_pin):
+                fail_config("BOOTSTRAP_REQUIRE_REPO must be OWNER/REPO")
+            require_repo = env_pin
     mode = os.environ.get("BOOTSTRAP_MODE", "probe").strip().lower()
     if mode == "probe":
         probe()
