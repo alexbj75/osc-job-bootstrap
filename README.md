@@ -33,6 +33,7 @@ Then set parameters:
 | `BOOTSTRAP_TOKEN_VAR` | Name of the env var holding the bearer token (default `GITHUB_READ_PAT`). |
 | `BOOTSTRAP_PIP_ARGS` | Optional `pip install` args run in the unpacked tree, e.g. `-r requirements.txt`. |
 | `BOOTSTRAP_STEPS` | Commands to run in the unpacked tree, separated by newlines or ` && ` (spaces required). No shell is used. |
+| `BOOTSTRAP_STEPS_B64` | The same step list, base64-encoded (UTF-8). Takes precedence over `BOOTSTRAP_STEPS`. Prefer this when commands contain `&`, `*`, `$` or other characters your platform may mangle during env injection. |
 | `BOOTSTRAP_STEP_TIMEOUT` | Per-step (and pip) timeout in seconds (default 1800). |
 
 Store the token itself (for example a fine-grained GitHub PAT with

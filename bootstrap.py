@@ -34,6 +34,11 @@ Environment contract (values typically come from an OSC parameter store):
   BOOTSTRAP_PIP_ARGS     Optional arguments to "python -m pip install",
                          executed in the unpacked tree, e.g.
                          "-r requirements.txt". Empty/unset skips pip.
+  BOOTSTRAP_STEPS_B64    Preferred over BOOTSTRAP_STEPS when the commands
+                         contain characters that the platform may mangle in
+                         env injection (&, *, $, ...): the same step list,
+                         base64-encoded (UTF-8). Takes precedence over
+                         BOOTSTRAP_STEPS when both are set.
   BOOTSTRAP_STEPS        run mode only, required. Commands to run inside the
                          unpacked tree, separated by newlines or " && ".
                          Each command is shlex-split and executed WITHOUT a
@@ -56,6 +61,8 @@ Exit codes: 0 success, 2 configuration error, 3 fetch/unpack failure,
 step's exit code.
 """
 
+import base64
+import binascii
 import os
 import re
 import shlex
@@ -282,11 +289,20 @@ def main():
         fail_config("unknown BOOTSTRAP_MODE %r (use 'probe' or 'run')" % mode)
 
     url = os.environ.get("BOOTSTRAP_TARBALL_URL", "").strip()
-    raw_steps = os.environ.get("BOOTSTRAP_STEPS", "")
+    raw_b64 = os.environ.get("BOOTSTRAP_STEPS_B64", "").strip()
+    if raw_b64:
+        try:
+            raw_steps = base64.b64decode(raw_b64, validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError) as exc:
+            fail_config("BOOTSTRAP_STEPS_B64 is not valid base64 UTF-8: %s"
+                        % type(exc).__name__)
+            return  # unreachable
+    else:
+        raw_steps = os.environ.get("BOOTSTRAP_STEPS", "")
     if not url:
         fail_config("run mode requires BOOTSTRAP_TARBALL_URL")
     if not raw_steps.strip():
-        fail_config("run mode requires BOOTSTRAP_STEPS")
+        fail_config("run mode requires BOOTSTRAP_STEPS (or BOOTSTRAP_STEPS_B64)")
     token_var = os.environ.get("BOOTSTRAP_TOKEN_VAR", DEFAULT_TOKEN_VAR).strip()
     try:
         timeout_s = int(os.environ.get("BOOTSTRAP_STEP_TIMEOUT", "1800"))
