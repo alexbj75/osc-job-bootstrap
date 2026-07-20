@@ -87,6 +87,7 @@ step's exit code.
 
 import base64
 import binascii
+import json
 import os
 import re
 import shlex
@@ -282,6 +283,7 @@ def resolve_masked_env(config_url, key_var):
                           "Authorization": "Bearer " + osc_token}))
     opener = urllib.request.build_opener(_SafeRedirectHandler)
     body = None
+    ok_base, ok_headers = None, {}
     last_err = "no base URL or auth variant attempted"
     for base in base_urls:
         if body is not None:
@@ -299,6 +301,7 @@ def resolve_masked_env(config_url, key_var):
                     body = resp.read()
                 finally:
                     resp.close()
+                ok_base, ok_headers = url, headers
                 log("resolve-masked: config read OK (host %s, auth variant %s)"
                     % (shown_host, variant_name))
                 break
@@ -318,7 +321,6 @@ def resolve_masked_env(config_url, key_var):
     if body is None:
         fail_fetch("config read failed on all base URLs and auth variants, "
                    "last: " + last_err)
-    import json
     try:
         data = json.loads(body.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
@@ -339,6 +341,44 @@ def resolve_masked_env(config_url, key_var):
             resolved.append(name)
         else:
             unresolved.append(name)
+    if unresolved and ok_base is not None:
+        # The list endpoint may mask secrets even when authorized; the
+        # per-key endpoint (GET .../config/<key>) returns {key, value}
+        # decrypted. Fetch each remaining name individually.
+        still = []
+        for name in unresolved:
+            req = urllib.request.Request(ok_base + "/" + name)
+            req.add_header("User-Agent", "osc-job-bootstrap")
+            req.add_header("Accept", "application/json")
+            for h, v in ok_headers.items():
+                req.add_header(h, v)
+            try:
+                resp = opener.open(req, timeout=30)
+                try:
+                    raw = resp.read()
+                finally:
+                    resp.close()
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                code = getattr(exc, "code", None)
+                log("resolve-masked: per-key %s failed (%s)"
+                    % (name, code if code is not None else type(exc).__name__))
+                still.append(name)
+                continue
+            value = None
+            try:
+                parsed = json.loads(raw.decode("utf-8"))
+                if isinstance(parsed, dict):
+                    value = parsed.get("value")
+                elif isinstance(parsed, str):
+                    value = parsed
+            except (ValueError, UnicodeDecodeError):
+                value = raw.decode("utf-8", "replace").strip()
+            if isinstance(value, str) and value and value != "***":
+                os.environ[name] = value
+                resolved.append(name)
+            else:
+                still.append(name)
+        unresolved = still
     log("resolve-masked: resolved %d (%s)" % (len(resolved), ", ".join(resolved) or "-"))
     if unresolved:
         log("resolve-masked: WARNING, still masked: %s" % ", ".join(unresolved))
