@@ -253,25 +253,46 @@ def resolve_masked_env(config_url, key_var):
         fail_config("resolve-masked: env var %r (BOOTSTRAP_CONFIG_KEY_VAR) "
                     "is empty" % key_var)
     log("resolve-masked: %d masked vars: %s" % (len(masked), ", ".join(masked)))
-    request = urllib.request.Request(config_url.rstrip("/") + "/config")
-    request.add_header("x-config-api-key", api_key)
-    request.add_header("User-Agent", "osc-job-bootstrap")
+    url = config_url.rstrip("/") + "/config"
     osc_token = os.environ.get("OSC_ACCESS_TOKEN", "")
+    # Auth contracts differ between config-service frontends; try the known
+    # variants in order and use the first that is not rejected.
+    variants = [
+        ("bearer-apikey", {"Authorization": "Bearer " + api_key,
+                           "x-config-api-key": api_key}),
+        ("x-config-api-key-only", {"x-config-api-key": api_key}),
+    ]
     if osc_token:
-        request.add_header("Authorization", "Bearer " + osc_token)
+        variants.append(("x-config-api-key+osc-bearer",
+                         {"x-config-api-key": api_key,
+                          "Authorization": "Bearer " + osc_token}))
     opener = urllib.request.build_opener(_SafeRedirectHandler)
-    try:
-        resp = opener.open(request, timeout=FETCH_TIMEOUT_S)
+    body = None
+    last_err = "no auth variant attempted"
+    for variant_name, headers in variants:
+        request = urllib.request.Request(url)
+        request.add_header("User-Agent", "osc-job-bootstrap")
+        for h, v in headers.items():
+            request.add_header(h, v)
         try:
-            body = resp.read()
-        finally:
-            resp.close()
-    except urllib.error.HTTPError as exc:
-        fail_fetch("config read failed: HTTP %d" % exc.code)
-    except urllib.error.URLError as exc:
-        fail_fetch("config read failed: %s" % getattr(exc, "reason", exc))
-    except (TimeoutError, OSError) as exc:
-        fail_fetch("config read failed: %s" % type(exc).__name__)
+            resp = opener.open(request, timeout=FETCH_TIMEOUT_S)
+            try:
+                body = resp.read()
+            finally:
+                resp.close()
+            log("resolve-masked: config read OK (auth variant: %s)" % variant_name)
+            break
+        except urllib.error.HTTPError as exc:
+            last_err = "HTTP %d (variant %s)" % (exc.code, variant_name)
+            if exc.code in (401, 403):
+                continue
+            fail_fetch("config read failed: " + last_err)
+        except urllib.error.URLError as exc:
+            fail_fetch("config read failed: %s" % getattr(exc, "reason", exc))
+        except (TimeoutError, OSError) as exc:
+            fail_fetch("config read failed: %s" % type(exc).__name__)
+    if body is None:
+        fail_fetch("config read failed on all auth variants, last: " + last_err)
     import json
     try:
         data = json.loads(body.decode("utf-8"))
